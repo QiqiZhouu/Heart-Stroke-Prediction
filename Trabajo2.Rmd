@@ -1,0 +1,2075 @@
+---
+title: "Trabajo2"
+author: "Qiqi Zhou"
+date: "2023-04-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+# Librerías necesarias para esta práctica:
+
+```{r}
+# Eliminar variables de la memoria
+rm(list = ls())
+
+# Paquetes
+library(skimr) # Resumen numérico
+library(tidymodels) # Depuración datos
+library(tidyverse) # Modelos
+library(outliers) # Outliers
+library(themis) # Sobremuestreo
+library(parallel) # Fase de validación
+library(doParallel) # Fase de validación
+library(rpart.plot) # Visualización de árboles
+library(performance)
+library(ggthemes)
+library(glue)
+library(vip)
+library(ggrepel)
+library(Rmisc)
+library(MASS)
+library(caret)
+library(MXM)
+library(Boruta)
+library(imbalance)
+library(foreign)
+library(visualpred)
+
+library(rpart)
+library(ggplot2)
+
+library(naniar)
+
+library(h2o)
+library(pROC)
+library(randomForest)
+```
+
+## Importar fichero
+```{r}
+datos_sample= read_csv(file = "/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Trabajo2/healthcare-dataset-stroke-data.csv")
+```
+
+
+# Análisis Exploratorio Inicial
+
+### Variables
+
+Nos hacemos una idea de las variables que tenemos y de sus tipos
+```{r}
+glimpse(datos_sample)
+```
+
+1) id:identificador único
+2) gender: "Male", "Female" o "Other"
+3) age: edad del paciente
+4) hypertension: 0 si el paciente no tiene hipertensión , 1 si lo tiene
+5) heart_disease: 0 si el paciente no tiene cardiopatía , 1 si lo tiene
+6) ever_married: "No" o "Yes"
+7) work_type: "children", "Govt_jov", "Never_worked", "Private" o "Self-employed"
+8) Residence_type: "Rural" o "Urban"
+9) avg_glucose_level: nivel de glucosa media en la sangre
+10) bmi: masa de indice corporal
+11) smoking_status: "formerly smoked", "never smoked", "smokes" o "Unknown" *Unknown es cuando no tenemos esa información del paciente
+12) stroke: 1 si el paciente tuvo un ataque cerebral o 0 en caso contrario 
+
+
+
+### Balance de la variable objetivo
+
+En primer lugar comprobaremos cómo se **distribuyen los niveles de la objetivo**, que además es una variable binaria.
+
+```{r}
+# Objetivo: predecir si un pasajero sobrevivió al accidente del transatlántico RMS Titanic o no
+datos_sample |>
+  dplyr::count(stroke) |>
+  mutate(porc = 100 * n / sum(n))
+```
+
+Graficaremos estas proporciones a través de un gráfico de barras:
+
+```{r}
+datos_sample |> 
+  mutate(stroke = as.factor(stroke)) |> 
+  dplyr::count(stroke) |>
+  mutate(porc = n / sum(n)) |> 
+  ggplot(aes(stroke, porc, fill = stroke)) +
+  geom_col(position = "dodge", color = "black") +
+  geom_text(aes(label = scales::percent(porc)), position = position_dodge(width = 0.8), vjust = -1) +
+  labs(title = "Proporción de ambas etiquetas", x = NULL, y = NULL) +
+  theme_minimal()
+```
+Vemos que nuestros datos están altamente desbalanceados, por lo que los modelos predecirá muy bien para los casos negativos pero no en los casos positivos. Por lo que si queremos que nuestro modelo tambien bueno a la hora de predecir los casos positivos entonces es muy probable que tengamos que hacer un sobremuestreo de este conjunto de datos.
+
+```{r}
+dput(names(datos_sample) )
+```
+
+
+## Cruce de varibles predictoras con la target
+
+### Variables numéricas
+```{r}
+
+
+listavar<-c("age", "hypertension", "heart_disease", "avg_glucose_level", 
+"stroke")
+
+for (i in listavar) {
+  print(ggplot(datos_sample,aes_string(x=i))+geom_histogram()+facet_grid(~factor(stroke)))
+}
+
+for (i in listavar) {
+  print(ggplot(datos_sample,aes_string(x=i,y="stroke"))+geom_point())
+}
+```
+explicar
+
+
+### Variables categóricas
+
+```{r}
+tabla1 <- table(datos_sample$stroke,datos_sample$gender)
+tabla2 <- table(datos_sample$stroke,datos_sample$ever_married)
+tabla3 <- table(datos_sample$stroke,datos_sample$work_type)
+tabla4 <- table(datos_sample$stroke,datos_sample$Residence_type)
+tabla5 <- table(datos_sample$stroke,datos_sample$bmi)
+tabla6 <- table(datos_sample$stroke,datos_sample$smoking_status)
+barplot(tabla1, legend=T,beside=T)
+barplot(tabla2, legend=T,beside=T)
+barplot(tabla3, legend=T,beside=T)
+barplot(tabla4, legend=T,beside=T)
+barplot(tabla5, legend=T,beside=T)
+barplot(tabla6, legend=T,beside=T)
+
+```
+
+
+```{r}
+ print(ggplot(stroke_data_clean,aes_string(x="bmi"))+geom_histogram()+facet_grid(~factor(stroke)))
+
+```
+
+
+
+# Análsis exploratorio de datos
+
+### Valores ausentes
+Comprobamos si en nuestro dataset tenemos o no datos ausentes 
+```{r}
+colSums(is.na(datos_sample))
+
+```
+
+Vemos que ningún dato se identifica como NA.
+
+Pero se ha observado que es porque el dataset ha imputado en los casos de nulos de la columna bmi por "N/A" y de la columna smoking_status por "Unknown". Asi que vamos a contar esos casos nulos para ver cuantos son.
+
+```{r}
+datos_sample |> filter(bmi == "N/A") |> 
+dplyr::count(bmi) 
+```
+
+```{r}
+datos_sample |> filter(smoking_status == "Unknown") |> 
+dplyr::count(smoking_status) 
+```
+Podemos buscar formas de imputar estas nulos 
+
+```{r}
+# replace the "N/A" in bmi
+stroke_data_clean <- replace_with_na(data = datos_sample, replace = list(bmi = c("N/A"), smoking_status = c("Unknown"))) 
+  
+
+```
+
+Ahora podemos imputar el bmi por la media o mediana y el smoking_Status por la moda para que nuestros modelos obtenga mejores resultados
+
+```{r}
+colSums(is.na(stroke_data_clean))
+```
+
+
+
+### Muestreo con una sección más pequeña de datos para trabajar
+```{r}
+
+set.seed(12345)
+
+stroke_data_clean <-
+  stroke_data_clean %>%
+  group_by(stroke) |> 
+  slice_sample(prop = 0.5) |> 
+  ungroup()
+
+
+```
+
+
+### Cambios previos en las variables del dataset
+
+#### Borrar ID
+```{r}
+stroke_data_clean <- stroke_data_clean |> dplyr::select(-id)
+```
+
+#### Convertir binarias a YES, NO
+```{r}
+stroke_data_clean$heart_disease<-if_else(stroke_data_clean$heart_disease==1,"Yes","No")
+stroke_data_clean$hypertension<-if_else(stroke_data_clean$hypertension==1,"Yes","No")
+stroke_data_clean$stroke<-if_else(stroke_data_clean$stroke==1,"Yes","No")
+```
+
+
+
+
+### Factorizar
+
+Cambiamos nuestras variables categóricas a factor para ayudar al modelo a trabajar con un tipo de datos más óptimo
+
+
+
+```{r}
+# cambiamos bmi a numerica 
+stroke_data_clean <- stroke_data_clean |>  mutate(bmi = as.numeric(bmi))
+```
+
+```{r}
+stroke_data_clean
+```
+
+
+```{r}
+stroke_data_clean <-
+  stroke_data_clean |> 
+  mutate_if(~!is.numeric(.), as.factor)
+```
+
+```{r}
+stroke_data_clean
+```
+
+
+### División de particiones
+
+Esto quizas no haga falta por lo que se podria borrar completamente esta seccion
+
+Dividimos en 70% training y 30% en test
+```{r}
+stroke_split <- initial_split(stroke_data_clean, strata = stroke, prop = 0.7)
+stroke_split
+```
+
+```{r}
+strokedata_train <- training(stroke_split)
+strokedata_test <- testing(stroke_split)
+```
+
+```{r}
+strokedata_train
+```
+
+```{r}
+count(strokedata_train$stroke)
+```
+
+
+### Receta tidy-verse para hacer modificaciones sobre el dataset
+```{r}
+stroke_receta <- 
+  recipe(data= strokedata_train, stroke ~ .) |>   # sobremuestreo
+  step_rose(stroke, over_ratio = 1, minority_prop = 0.49) |> 
+  # imoutar por media
+  step_impute_median(bmi) |> 
+  # imputar por moda
+  step_impute_mode(smoking_status) |> 
+  # estandarizamos las numericas para tener una desviacion entre 1 y media en 0
+  step_normalize(all_numeric_predictors()) |> 
+  # dummificamos las variables categóricas
+  step_dummy(all_nominal_predictors()) |> 
+  # filtro de cero varianza para eliminar variables que no "sirven"
+  step_zv(all_predictors()) 
+  
+  #step_upsample(stroke, over_ratio = 1)
+  
+
+stroke_limpia <- bake(stroke_receta |> prep(), new_data = NULL)
+  
+```
+
+
+```{r}
+stroke_limpia
+```
+
+```{r}
+count(stroke_limpia$stroke)
+```
+
+
+```{r}
+stroke_limpia |> glimpse()
+```
+
+
+# Chequeo intuitivo 
+
+## Selección de variables stepwise básico
+
+Para no repetir el mismo coódigo de la selección de variables se ha copiado los variables del apartado selección de variables -> AIC
+
+
+BIC:  age + hypertension_Yes + avg_glucose_level + heart_disease_Yes + 
+    smoking_status_smokes + ever_married_Yes + work_type_Private
+
+## Modelo con regresión logística
+
+
+```{r}
+set.seed(12345)
+
+control<-trainControl(method = "repeatedcv",number=4,repeats=5,
+                      savePredictions = "all",classProbs=TRUE) 
+
+logi<- train(data= stroke_limpia, stroke~  age + hypertension_Yes + avg_glucose_level + heart_disease_Yes + 
+    smoking_status_smokes + ever_married_Yes + work_type_Private ,
+             method="glm",trControl=control)
+
+summary(logi)
+logi
+sal<-logi$pred
+
+```
+
+```{r}
+salconfu <- confusionMatrix(sal$pred, sal$obs,positive= "Yes")
+```
+
+```{r}
+salconfu
+```
+
+
+## Modelo con RF
+```{r}
+rfgrid<-expand.grid(mtry=c(3))
+
+control<-trainControl(method = "repeatedcv",number=10,savePredictions = "all",
+                      classProbs=TRUE) 
+
+rf<- train(data= stroke_limpia, stroke~ age + hypertension_Yes + avg_glucose_level + heart_disease_Yes + 
+    Residence_type_Urban + work_type_Private,
+           method="rf",trControl=control,tuneGrid=rfgrid,
+           linout = FALSE,ntree=200,nodesize=10,replace=TRUE,
+           importance=TRUE)
+
+final<-rf$finalModel
+
+tabla<-as.data.frame(importance(final))
+tabla<-tabla[order(-tabla$MeanDecreaseAccuracy),]
+tabla
+
+barplot(tabla$MeanDecreaseAccuracy,names.arg=rownames(tabla))
+```
+
+```{r}
+rf$results
+```
+```{r}
+rf$finalModel
+```
+
+```{r}
+source("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Tema 11 Decision en clasificacion binaria/funcion resultadosglm.R")
+source("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Tema 11 Decision en clasificacion binaria/funcion resultadosnnet.R")
+source("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Tema 11 Decision en clasificacion binaria/funcion resultadosrf.R")
+source("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Tema 11 Decision en clasificacion binaria/funcion resultadossvm.R")
+source("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Tema 11 Decision en clasificacion binaria/funcion resultadosgbm.R")
+source("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Tema 11 Decision en clasificacion binaria/funcion seleccionar 2.0.R")
+source("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Tema 11 Decision en clasificacion binaria/toydata 2.0.R")
+```
+
+
+```{r}
+count(stroke_limpia$stroke)
+```
+
+```{r}
+dataf
+```
+
+
+## Gráfica general de nuestros datos con regresión logística
+
+```{r}
+#dataf<-stroke_limpia[[2]]
+listconti<-c("age" , "hypertension_Yes" , "avg_glucose_level" , "heart_disease_Yes" , 
+    "smoking_status_smokes" , "ever_married_Yes" , "work_type_Private")
+listclass<-c()
+vardep = c("stroke")
+dataf <- as.data.frame(stroke_limpia[,c(listconti, listclass, vardep)])
+
+result_glm<-famdcontour(dataf=dataf, listconti=listconti, listclass=listclass, vardep=vardep,
+title="GLM",title2=" ",selec=0,modelo="glm",classvar=0)
+
+res<-resultadosglm(dataf=dataf,vardep=vardep, corte = 0.5)
+
+res
+
+
+result_glm[[2]]+xlab("")+ylab("")
+
+result_glm
+```
+
+
+## Gráfica general de nuestros datos con random forest
+```{r}
+listconti<-c("age" , "hypertension_Yes" , "avg_glucose_level" , "heart_disease_Yes" , 
+    "smoking_status_smokes" , "ever_married_Yes" , "work_type_Private")
+listclass<-c()
+vardep = "stroke"
+dataf <- as.data.frame(stroke_limpia[,c(listconti, listclass, vardep)])
+
+
+
+result<-famdcontour(dataf=dataf, listconti=listconti, listclass=listclass, vardep=vardep,
+title="RF",title2=" ",selec=0,modelo="rf",classvar=0)
+
+res<-resultadosrf(dataf=dataf,vardep=vardep,mtry=3)
+
+print(resultadosrf(dataf=dataf,vardep=vardep,mtry=3))
+res
+
+result[[2]]+xlab("")+ylab("")
+```
+
+
+
+
+# Seleccion de variables
+
+A continuación, vamos a realizar una selección de variables de todas las variables que tenemos, porque es muy probable que si utilizamos todas las variables podríamos estar haciendo un sobremuestreo, aparte de que puede haber variables que no ayudan o no sirvan en el modelo.
+
+Guardamos los datos dummificados y estandarizados y lo ajustamos 
+```{r}
+ajuste_null <- 
+  glm(data = stroke_limpia , stroke ~ 1, family = binomial(link = "logit"))
+
+ajuste_stroke_regresion <- 
+  glm(data = stroke_limpia , stroke ~ ., family = binomial(link = "logit"))
+```
+
+Fijar semilla 
+```{r}
+set.seed(12345)
+```
+
+
+### AIC
+```{r}
+modAIC <- MASS::stepAIC(ajuste_null, scope=list(upper =ajuste_stroke_regresion),family = binomial(link = "logit"),
+                        direction = "both")
+```
+stroke ~ age + hypertension_Yes + avg_glucose_level + heart_disease_Yes + 
+    smoking_status_smokes + ever_married_Yes + work_type_Private + 
+    smoking_status_never.smoked + bmi + work_type_Never_worked
+10
+
+
+
+### BIC 
+```{r}
+modBIC <- MASS::stepAIC(ajuste_null,scope=list(upper =ajuste_stroke_regresion),family = binomial(link = "logit"),
+                        direction = "both", k = log(nrow(stroke_limpia)))
+```
+stroke ~ age + hypertension_Yes + avg_glucose_level + heart_disease_Yes + 
+    smoking_status_smokes + ever_married_Yes + work_type_Private
+    
+7
+
+### SBF
+```{r}
+filtro<-sbf(data = stroke_limpia, stroke~. , sbfControl = sbfControl(functions = rfSBF, method = "repeatedcv", verbose = FALSE))
+
+a<-dput(filtro$optVariables)
+
+length(a)
+```
+c("age", "avg_glucose_level", "gender_Male", "hypertension_Yes", 
+"heart_disease_Yes", "ever_married_Yes", "work_type_Govt_job", 
+"work_type_Never_worked", "work_type_Self.employed", "smoking_status_never.smoked"
+)
+[1] 10
+
+
+### MXM
+```{r}
+stroke_limpia$stroke<-if_else(stroke_limpia$stroke=="Yes",1,0)
+```
+
+
+```{r}
+data_mxm <- as.matrix(stroke_limpia)
+
+mmpc2 <- MMPC("stroke", dataset =data_mxm, max_k = 3, hash = TRUE, test = "testIndLogistic")
+
+mmpc2@selectedVars
+
+a<-dput(names(stroke_limpia[,c(mmpc2@selectedVars)]))
+
+length(a)
+
+a
+```
+
+c("age", "avg_glucose_level", "hypertension_Yes", "heart_disease_Yes", 
+"ever_married_Yes", "work_type_Self.employed")
+6
+
+
+### RFE
+```{r}
+
+control <- rfeControl(functions=rfFuncs, method="repeatedcv", number=10)
+# run the RFE algorithm
+results <- rfe(data = stroke_limpia, stroke~. , sizes=c(1:8), rfeControl=control)
+results
+selecrfe<-results$optVariables[1:8]
+length(selecrfe)
+dput(selecrfe)
+```
+[1] 8
+c("age", "avg_glucose_level", "hypertension_Yes", "Residence_type_Urban", 
+"bmi", "heart_disease_Yes", "smoking_status_never.smoked", "gender_Male"
+)
+
+
+
+### Boruta
+
+
+```{r}
+
+out.boruta <- Boruta(stroke~., data = stroke_limpia)
+
+print(out.boruta)
+
+summary(out.boruta)
+
+sal<-data.frame(out.boruta$finalDecision)
+
+sal2<-sal[which(sal$out.boruta.finalDecision=="Confirmed"),,drop=FALSE]
+dput(row.names(sal2))
+
+length(dput(row.names(sal2)))
+```
+c("age", "avg_glucose_level", "bmi", "gender_Male", "hypertension_Yes", 
+"heart_disease_Yes", "ever_married_Yes", "work_type_Govt_job", 
+"work_type_Never_worked", "work_type_Private", "work_type_Self.employed", 
+"Residence_type_Urban", "smoking_status_never.smoked", "smoking_status_smokes"
+)
+[1] 14
+
+## SES
+```{r}
+data_mxm <- as.matrix(stroke_limpia)
+
+SES1 <- SES("stroke", data_mxm, max_k = 3, hash = TRUE,
+            test = "testIndLogistic")
+
+SES1@selectedVars
+
+dput(names(stroke_limpia[,c(SES1@selectedVars)]))
+
+a<-dput(names(stroke_limpia[,c(SES1@selectedVars)]))
+
+length(a)
+
+a
+```
+c("age", "avg_glucose_level", "hypertension_Yes", "heart_disease_Yes", 
+"ever_married_Yes", "work_type_Self.employed")
+[1] 6
+
+
+
+## StrepRepetido AIC
+```{r}
+source("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Tema 6/funcion steprepetido binaria.R")
+```
+
+```{r}
+archivo1<-stroke_limpia
+
+
+lista<-steprepetidobinaria(data=archivo1,vardep=c("stroke"),
+                           listconti= c("age", "avg_glucose_level", "bmi", "gender_Male", 
+"hypertension_Yes", "heart_disease_Yes", "ever_married_Yes", 
+"work_type_Govt_job", "work_type_Never_worked", "work_type_Private", 
+"work_type_Self.employed", "Residence_type_Urban", "smoking_status_never.smoked", 
+"smoking_status_smokes"),
+                           sinicio=12345,sfinal=12385,porcen=0.8,criterio="AIC")
+
+
+tabla<-lista[[1]]
+a <- dput(lista[[2]][[1]])
+b<- dput(lista[[2]][[2]])
+length(a)
+length(b)
+```
+c("age", "hypertension_Yes", "avg_glucose_level", "heart_disease_Yes", 
+"smoking_status_smokes", "work_type_Private", "ever_married_Yes", 
+"smoking_status_never.smoked", "bmi")
+c("age", "hypertension_Yes", "heart_disease_Yes", "avg_glucose_level", 
+"smoking_status_smokes", "ever_married_Yes", "work_type_Private", 
+"smoking_status_never.smoked")
+[1] 9
+[1] 8
+
+### StrepRepetido BIC
+
+```{r}
+lista<-steprepetidobinaria(data=archivo1,vardep=c("stroke"),
+                           listconti= c("age", "avg_glucose_level", "bmi", "gender_Male", 
+"hypertension_Yes", "heart_disease_Yes", "ever_married_Yes", 
+"work_type_Govt_job", "work_type_Never_worked", "work_type_Private", 
+"work_type_Self.employed", "Residence_type_Urban", "smoking_status_never.smoked", 
+"smoking_status_smokes"),
+                           sinicio=12345,sfinal=12385,porcen=0.8,criterio="BIC")
+
+
+tabla<-lista[[1]]
+a <- dput(lista[[2]][[1]])
+
+length(a)
+
+```
+c("age", "hypertension_Yes", "avg_glucose_level", "heart_disease_Yes", 
+"smoking_status_smokes", "ever_married_Yes", "work_type_Private"
+)
+[1] 7
+
+
+
+# COMPARACION REGRESIÓN VIA CV REPETIDA Y BOXPLOT
+
+```{r}
+source ("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Tema 6/cruzadas avnnet y log binaria.R")
+source("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Tema 6/funcion steprepetido binaria.R")
+```
+
+Volvemos a cambiar a yes no
+```{r}
+stroke_limpia$stroke<-if_else(stroke_limpia$stroke==1,"Yes","No")
+```
+
+
+```{r}
+stroke_limpia$stroke<- stroke_limpia$stroke |> as.factor()
+```
+
+```{r}
+count(stroke_limpia$stroke)
+```
+
+
+```{r}
+stroke_limpia_matriz <- stroke_limpia |> as.data.frame()
+```
+
+```{r}
+count(stroke_limpia_matriz$stroke)
+```
+
+## AIC
+```{r}
+medias1<-cruzadalogistica(data=stroke_limpia_matriz,
+                          vardep="stroke",listconti=c("age" , "hypertension_Yes" , "avg_glucose_level" , "heart_disease_Yes" , 
+    "smoking_status_smokes" , "ever_married_Yes" , "work_type_Private" , 
+    "smoking_status_never.smoked" , "bmi" , "work_type_Never_worked"),
+                          listclass=c(""),grupos=4,sinicio=1234,repe=10)
+
+medias1$modelo="STEPAIC"
+```
+
+
+## BIC
+```{r}
+medias2<-cruzadalogistica(data=stroke_limpia_matriz,
+                          vardep="stroke",listconti=c("age" , "hypertension_Yes" , "avg_glucose_level" , "heart_disease_Yes" , 
+    "smoking_status_smokes" , "ever_married_Yes" , "work_type_Private"),
+                          listclass=c(""),grupos=4,sinicio=1234,repe=10)
+
+medias2$modelo="STEPBIC"
+```
+
+
+## SBF
+```{r}
+medias3<-cruzadalogistica(data=stroke_limpia_matriz,
+                          vardep="stroke",listconti=c("age", "avg_glucose_level", "gender_Male", "hypertension_Yes", 
+"heart_disease_Yes", "ever_married_Yes", "work_type_Govt_job", 
+"work_type_Never_worked", "work_type_Self.employed", "smoking_status_never.smoked"
+),
+                          listclass=c(""),grupos=4,sinicio=1234,repe=10)
+
+medias3$modelo="SBF"
+```
+
+## MXM
+```{r}
+medias4<-cruzadalogistica(data=stroke_limpia_matriz,
+                          vardep="stroke",listconti=c("age", "avg_glucose_level", "hypertension_Yes", "heart_disease_Yes", 
+"ever_married_Yes", "work_type_Self.employed"),
+                          listclass=c(""),grupos=4,sinicio=1234,repe=10)
+
+medias4$modelo="MXM"
+```
+
+
+## RFE
+
+```{r}
+medias5<-cruzadalogistica(data=stroke_limpia_matriz,
+                          vardep="stroke",listconti=c("age", "avg_glucose_level", "hypertension_Yes", "Residence_type_Urban", 
+"bmi", "heart_disease_Yes", "smoking_status_never.smoked", "gender_Male"
+),
+                          listclass=c(""),grupos=4,sinicio=1234,repe=10)
+
+medias5$modelo="RFE"
+```
+
+
+## Boruta
+```{r}
+medias6<-cruzadalogistica(data=stroke_limpia_matriz,
+                          vardep="stroke",listconti=c("age", "avg_glucose_level", "bmi", "gender_Male", "hypertension_Yes", 
+"heart_disease_Yes", "ever_married_Yes", "work_type_Govt_job", 
+"work_type_Never_worked", "work_type_Private", "work_type_Self.employed", 
+"Residence_type_Urban", "smoking_status_never.smoked", "smoking_status_smokes"
+),
+                          listclass=c(""),grupos=4,sinicio=1234,repe=10)
+
+medias6$modelo="Boruta"
+```
+
+## SES
+
+```{r}
+medias7<-cruzadalogistica(data=stroke_limpia_matriz,
+                          vardep="stroke",listconti=c("age", "avg_glucose_level", "hypertension_Yes", "heart_disease_Yes", 
+"ever_married_Yes", "work_type_Self.employed"),
+                          listclass=c(""),grupos=4,sinicio=1234,repe=10)
+
+medias7$modelo="SES"
+```
+
+
+
+
+## STEP1
+```{r}
+medias8<-cruzadalogistica(data=stroke_limpia_matriz,
+                          vardep="stroke",listconti=c("age", "hypertension_Yes", "avg_glucose_level", "heart_disease_Yes", 
+"smoking_status_smokes", "work_type_Private", "ever_married_Yes", 
+"smoking_status_never.smoked", "bmi"),
+                          listclass=c(""),grupos=4,sinicio=1234,repe=10)
+
+medias8$modelo="STEP1_1"
+```
+
+```{r}
+medias9<-cruzadalogistica(data=stroke_limpia_matriz,
+                          vardep="stroke",listconti=c("age", "hypertension_Yes", "heart_disease_Yes", "avg_glucose_level", 
+"smoking_status_smokes", "ever_married_Yes", "work_type_Private", 
+"smoking_status_never.smoked"),
+                          listclass=c(""),grupos=4,sinicio=1234,repe=10)
+
+medias9$modelo="STEP1_2"
+```
+
+
+## STEP2
+```{r}
+medias10<-cruzadalogistica(data=stroke_limpia_matriz,
+                          vardep="stroke",listconti=c("age", "hypertension_Yes", "avg_glucose_level", "heart_disease_Yes", 
+"smoking_status_smokes", "ever_married_Yes", "work_type_Private"
+),
+                          listclass=c(""),grupos=4,sinicio=1234,repe=10)
+
+medias10$modelo="STEP2_1"
+```
+
+
+## Gráfica
+```{r}
+union1<-rbind(medias1,medias2,medias3,medias4,medias5,medias6,medias7, medias8, medias9, medias10)
+
+par(cex.axis=0.8)
+boxplot(data=union1,col="pink",tasa~modelo,main="TAS DE FALLOS")
+
+
+par(cex.axis=0.7)
+boxplot(data=union1,col="pink",auc~modelo,main="AUC")
+```
+
+```{r}
+union1 |> aggregate(auc ~ modelo, FUN = mean) 
+union1 |> aggregate(tasa ~ modelo, FUN = mean) 
+```
+
+
+#### Etiquetado con el nº de variables
+
+```{r}
+# **********************************************************************
+#  COMO AÑADIR ETIQUETAS CON EL NUMERO DE VARIABLES DE CADA MODELO
+# **********************************************************************
+
+# ESTO PARA DECIR CUANTAS VARIABLES TIENE CADA MODELO
+
+dput(names(table(union1$modelo)))
+
+nvar<-c(14,6,8,10,6, 9, 8, 7,10,7)
+
+nvar2 <- paste(nvar, "var.")
+
+# ESTO PARA CONTROLAR LOS EJES Y POSICION DE LA ETIQUETA
+
+max_auc <- max(union1$auc)
+min_auc <- min(union1$auc)
+num_modelos <- length(unique(union1$modelo))
+
+
+# Crear el boxplot y agregar las etiquetas
+par(cex.axis=0.6,las=2)
+boxplot(data=union1,col="pink",auc~modelo,main="AUC",ylim=c(min_auc, max_auc*1.01))
+text(x = seq(1:num_modelos), y = rep(max_auc, num_modelos), labels = nvar2, pos = 3,col="red")
+axis(2, at=pretty(range(union1$auc),n=20))
+```
+
+STEPBIC Y STREP2_1 devuelve el mismo variable por lo que cualquiera puede servir
+
+
+
+
+
+# Paralelización 
+```{r}
+clusters <- detectCores() - 2
+make_cluster <- makeCluster(clusters)
+registerDoParallel(make_cluster)
+```
+
+# Carga de archivos de funciones necesarias para ejecutar los modelos
+```{r}
+# Red, RF, GBM, XGBM
+source ("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Tema 7/cruzadas avnnet y log binaria.R")
+source ("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Tema 7/cruzada arbolbin.R")
+source ("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Tema 7/cruzada gbm binaria.R")
+source ("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Tema 7/cruzada rf binaria.R")
+source ("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Tema 7/cruzada xgboost binaria.R")
+
+#SVM
+source ("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/SVM machine learning/cruzada SVM binaria lineal.R")
+source ("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/SVM machine learning/cruzada SVM binaria polinomial.R")
+source ("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/SVM machine learning/cruzada SVM binaria RBF.R")
+
+# Ensamblado
+source("/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Ensamblado/cruzadas ensamblado binaria fuente.R")
+```
+
+
+
+# Creacion de un dataset solo con las variables seleccionadas de BIC
+```{r}
+vardep <- "stroke"
+variables <- c("age" , "hypertension_Yes" , "avg_glucose_level" , "heart_disease_Yes" , 
+    "smoking_status_smokes" , "ever_married_Yes" , "work_type_Private")
+#data2 <- stroke_limpia[,c(variables,vardep)]
+data_bic <- stroke_limpia[,c(variables,vardep)]
+```
+
+```{r}
+paste(variables , collapse = "+")
+```
+
+```{r}
+data_bic
+```
+
+# Creación de modelos
+
+
+## Regresión Logística
+```{r}
+
+medias_logi<-cruzadalogistica(data=as.data.frame(data_bic),
+                          vardep="stroke",listconti=
+                            c("age" , "hypertension_Yes" , "avg_glucose_level" , "heart_disease_Yes" , 
+    "smoking_status_smokes" , "ever_married_Yes" , "work_type_Private"),
+                          listclass=c(""),grupos=4,sinicio=12345,repe=5)
+
+medias_logi$modelo = "logistica"
+
+```
+
+
+
+## Redes Neuronales
+
+###Caluclo del máximo número de nodos
+
+6806 observaciones
+7 variables 
+
+```{r}
+3412/15
+```
+
+```{r}
+3412/30
+```
+
+```{r}
+113.7333 / 9
+```
+
+
+
+### Tuneo de redes neuronales
+```{r}
+
+
+control<-trainControl(method = "repeatedcv",
+                      number=4,savePredictions = "all") 
+
+set.seed(12345)
+nnetgrid <-  expand.grid(size=c(5,10,12,13,15),decay=c(0.01,0.1,0.001,0.0001),bag=F)
+listaiter<-c(10,20,50,100,200,300,500,1000,2000,3000)
+```
+
+```{r}
+#data_bic$stroke<-if_else(data_bic$stroke==1,"Yes","No")
+```
+
+```{r}
+#data_bic$stroke<- as.factor(data_bic$stroke)
+```
+
+
+### Entrenamiento de red BIC
+```{r}
+set.seed(12345)
+completo<-data.frame()
+
+#listaiter<-c(300,500,1000,2000,3000)
+### Segun la mejor es la 500 para que no tarde tanto cambiamos de momento a 500 pero recuerda cambiarlo de vuelta
+#listaiter<-c(500)
+for (iter in listaiter)
+{
+  rednnet<- train(stroke~ age+hypertension_Yes+avg_glucose_level+heart_disease_Yes+smoking_status_smokes+ever_married_Yes+work_type_Private,
+                  data=data_bic,
+                  method="avNNet",linout = FALSE ,maxit=iter,
+                  trControl=control,repeats=5,tuneGrid=nnetgrid,trace=F)
+  # Añado la columna del parametro de iteraciones
+  rednnet$results$itera<-iter
+  # Voy incorporando los resultados a completo
+  completo<-rbind(completo,rednnet$results)
+  
+  
+}
+```
+
+
+
+### Eleccion del mejor red 
+
+```{r}
+rednnet
+```
+
+
+```{r}
+rednnet$bestTune
+```
+
+### Resultados
+```{r}
+resultados_red1 <- rednnet$pred |> dplyr::filter(decay == 0.1 & size==13)
+
+resultados_red1
+```
+
+
+### Gráfica maxit
+```{r}
+completo<-completo[order(completo$Accuracy),]
+
+ggplot(completo, aes(x=factor(itera), y=Accuracy, 
+                     color=factor(decay),pch=factor(size))) +
+  geom_point(position=position_dodge(width=0.5),size=3)
+```
+
+### Implementacion de la red con el mejor tuneo
+
+```{r}
+medias_redes<-  cruzadaavnnetbin(data=data_bic,
+                          vardep="stroke",listconti=
+                            c("age" , "hypertension_Yes" , "avg_glucose_level" , "heart_disease_Yes" , 
+    "smoking_status_smokes" , "ever_married_Yes" , "work_type_Private"),
+                          listclass=c(""),grupos=4,sinicio=12345,repe=5,repeticiones=5,itera=200,
+                          size=c(13),decay=c(0.001))
+
+medias_redes$modelo="Red con maxit"
+```
+
+```{r}
+medias_redes[2]
+```
+
+
+## Bagging 
+
+
+### Tuneo de los parámetros de Bagging
+```{r}
+set.seed(12345)
+
+# mtry tiene que ser mismo que el número de variables usada
+bagginggrid<-expand.grid(mtry=c(7))
+
+control<-trainControl(method = "repeatedcv",number=4,repeats = 2, savePredictions = "all",
+ classProbs=TRUE)
+```
+
+
+
+```{r}
+# PARA PLOTEAR EL ERROR OOB A MEDIDA QUE AVANZAN LAS ITERACIONES
+# SE USA DIRECTAMENTE EL PAQUETE randomForest
+set.seed(12345)
+
+rfbis<-randomForest(data= data_bic, factor(stroke)~age+hypertension_Yes+avg_glucose_level+heart_disease_Yes+smoking_status_smokes+ever_married_Yes+work_type_Private,
+ mtry=7,ntree=5000,sampsize=300,nodesize=10,replace=TRUE)
+
+plot(rfbis$err.rate[,1])
+```
+es el error cometido en las observaciones que no caen en la muestra, y por tanto pueden ser tomados como observaciones test y sirven para observar el error cometido sobre test a medida que avanzan las iteraciones.
+
+### Entrenamiento
+```{r}
+## 15 nodesize funciona mejor que 10 y 20
+set.seed(12345)
+
+rf<- train(data=data_bic,
+ factor(stroke)~age+hypertension_Yes+avg_glucose_level+heart_disease_Yes+smoking_status_smokes+ever_married_Yes+work_type_Private,
+ method="rf",trControl=control,tuneGrid=bagginggrid,
+ linout = FALSE,ntree=155,nodesize=15,replace=TRUE, importance=T)
+
+rf$results
+```
+
+### Cálculo del max. nº de sampsize
+```{r}
+0.75*3412
+```
+2559
+
+### Bagging con sampsize 
+```{r}
+medias1_bagging<-cruzadarfbin(data=data_bic, vardep="stroke",
+   listconti=c("age" , "hypertension_Yes" , "avg_glucose_level" , "heart_disease_Yes" , 
+    "smoking_status_smokes" , "ever_married_Yes" , "work_type_Private"),
+ listclass=c(""),
+  grupos=5,sinicio=1234,repe=10,nodesize=15,
+  mtry=7,ntree=155,replace=TRUE,sampsize=500)
+
+      medias1_bagging$modelo="bagging500"
+```
+
+```{r}
+medias2_bagging<-cruzadarfbin(data=data_bic, vardep="stroke",
+   listconti=c("age" , "hypertension_Yes" , "avg_glucose_level" , "heart_disease_Yes" , 
+    "smoking_status_smokes" , "ever_married_Yes" , "work_type_Private"),
+ listclass=c(""),
+  grupos=5,sinicio=12345,repe=10,nodesize=15,
+  mtry=7,ntree=155,replace=TRUE)
+
+      medias2_bagging$modelo="baggingBase"
+```
+
+
+```{r}
+medias3_bagging<-cruzadarfbin(data=data_bic, vardep="stroke",
+   listconti=c("age" , "hypertension_Yes" , "avg_glucose_level" , "heart_disease_Yes" , 
+    "smoking_status_smokes" , "ever_married_Yes" , "work_type_Private"),
+ listclass=c(""),
+  grupos=5,sinicio=12345,repe=10,nodesize=15,
+  mtry=7,ntree=155,replace=TRUE, sampsize = 1000)
+
+      medias3_bagging$modelo="bagging1000"
+```
+
+
+```{r}
+# La mejor
+medias4_bagging<-cruzadarfbin(data=data_bic, vardep="stroke",
+   listconti=c("age" , "hypertension_Yes" , "avg_glucose_level" , "heart_disease_Yes" , 
+    "smoking_status_smokes" , "ever_married_Yes" , "work_type_Private"),
+ listclass=c(""),
+  grupos=4,sinicio=12345,repe=5,nodesize=15,
+  mtry=7,ntree=155,replace=TRUE, sampsize=2000)
+
+      medias4_bagging$modelo="bagging2000"
+```
+
+```{r}
+medias4_bagging
+```
+
+
+```{r}
+medias5_bagging<-cruzadarfbin(data=data_bic, vardep="stroke",
+   listconti=c("age" , "hypertension_Yes" , "avg_glucose_level" , "heart_disease_Yes" , 
+    "smoking_status_smokes" , "ever_married_Yes" , "work_type_Private"),
+ listclass=c(""),
+  grupos=5,sinicio=1234,repe=10,nodesize=15,
+  mtry=7,ntree=155,replace=TRUE, sampsize= 250)
+
+      medias5_bagging$modelo="bagging250"
+```
+
+## RF
+
+### Tuneo rf
+```{r}
+set.seed(12345)
+rfgrid<-expand.grid(mtry=c(1,2,3,4,5,6,7))
+control<-trainControl(method = "repeatedcv",number=4,repeats = 2, savePredictions = "all",classProbs=TRUE) 
+```
+
+
+### Entrenamiento RF
+```{r}
+set.seed(12345)
+
+rf<- train(factor(stroke)~age+hypertension_Yes+avg_glucose_level+heart_disease_Yes+smoking_status_smokes+ever_married_Yes+work_type_Private ,data=data_bic,
+ method="rf",trControl=control,tuneGrid=rfgrid,
+ linout = FALSE,ntree=3000,nodesize=10,replace=TRUE,
+ importance=TRUE)
+
+rf
+```
+
+### Muestra de error
+```{r}
+# Para la variable ntree
+
+set.seed(12345)
+
+rfbis<-randomForest(factor(stroke)~age+hypertension_Yes+avg_glucose_level+heart_disease_Yes+smoking_status_smokes+ever_married_Yes+work_type_Private,
+ data=data_bic,
+ mtry=3 ,ntree=3000,nodesize=10,replace=TRUE)
+
+plot(rfbis$err.rate[,1])
+```
+
+
+### Seleccion del mejor rf
+```{r}
+rf$bestTune
+```
+
+```{r}
+rf$results
+```
+
+### Mejor tuneo RF
+```{r}
+medias_rf<-cruzadarfbin(data=data_bic, 
+                          vardep="stroke",listconti=c("age" , "hypertension_Yes" , "avg_glucose_level" , "heart_disease_Yes" , 
+    "smoking_status_smokes" , "ever_married_Yes" , "work_type_Private"),
+                        listclass=c(""),grupos=4,sinicio=1234,repe=5,nodesize=10,
+                        mtry=3,ntree=1100,replace=TRUE,sampsize=1)
+
+medias_rf$modelo="rf"
+```
+
+
+## GBM
+
+### Tuneo de parámetros 
+```{r}
+set.seed(12345)
+
+gbmgrid<-expand.grid(shrinkage=c(0.2,0.1,0.05,0.03,0.01,0.001),
+ n.minobsinnode=c(5,10,20),
+ n.trees=c(50,100,300,500,800,1000,1200),
+ interaction.depth=c(2))
+
+control<-trainControl(method = "repeatedcv",number=4,repeats = 2, savePredictions = "all",
+ classProbs=TRUE)
+```
+
+
+### Aplicación de GBM de los grids
+```{r}
+set.seed(12345)
+
+gbm<- train(factor(stroke)~age+hypertension_Yes+avg_glucose_level+heart_disease_Yes+smoking_status_smokes+ever_married_Yes+work_type_Private,
+ data = data_bic,
+ method="gbm",trControl=control,tuneGrid=gbmgrid,
+ distribution="bernoulli", bag.fraction=1,verbose=FALSE)
+
+gbm
+ 
+plot(gbm)
+```
+
+### Resultados con el mejor tuneo
+```{r}
+gbm$bestTune
+```
+
+```{r}
+gbm$results |>  filter(n.trees == 100 & interaction.depth== 2 & shrinkage == 0.2 & n.minobsinnode==10)
+```
+
+
+### GBM con el mejor tuneo 
+```{r}
+medias_gbm<-cruzadagbmbin(data=stroke_limpia, vardep="stroke",
+   listconti=c("age" , "hypertension_Yes" , "avg_glucose_level" , "heart_disease_Yes" , 
+    "smoking_status_smokes" , "ever_married_Yes" , "work_type_Private"),
+ listclass=c(""),
+  grupos=4,sinicio=1234,repe=5,
+n.minobsinnode=10,shrinkage=0.2, n.trees=100,interaction.depth=2)
+
+medias_gbm$modelo="gbm"
+```
+
+
+## XGBOOST
+
+### Tuneo de parámetros
+```{r}
+xgbmgrid<-expand.grid(
+ min_child_weight=c(5,10,15,20,25),
+ eta=c(0.1,0.05,0.03,0.01,0.001),
+ nrounds=c(100,500,1000,5000),
+ max_depth=6,
+ gamma=0,colsample_bytree=1,subsample=1)
+
+control<-trainControl(method = "repeatedcv",number=4,repeats = 2,savePredictions = "all",
+ classProbs=TRUE) 
+```
+
+### Entrenamiento de XGBM
+```{r}
+set.seed(12345)
+
+xgbm<- train(factor(stroke)~age+hypertension_Yes+avg_glucose_level+heart_disease_Yes+smoking_status_smokes+ever_married_Yes+work_type_Private,
+ data=stroke_limpia,
+ method="xgbTree",trControl=control,
+ tuneGrid=xgbmgrid,verbose=FALSE)
+
+xgbm
+ 
+plot(xgbm)
+```
+
+
+### Selección del mejor tuneo 
+```{r}
+xgbm$bestTune
+```
+
+```{r}
+xgbm$results |>  filter(nrounds == 100 & max_depth== 6 & eta == 0.05 & gamma==0 & colsample_bytree==1, min_child_weight == 25) 
+```
+
+
+### XGBM con el mejor tuneo
+```{r}
+
+medias_xgbm<-cruzadaxgbmbin(data=stroke_limpia,
+ vardep="stroke",listconti=c("age" , "hypertension_Yes" , "avg_glucose_level" , "heart_disease_Yes" , 
+    "smoking_status_smokes" , "ever_married_Yes" , "work_type_Private"),
+listclass=c(""),
+  grupos=4,sinicio=1234,repe=5,
+   min_child_weight=25,eta=0.05,nrounds=100,max_depth=6,
+  gamma=0,colsample_bytree=1,subsample=1)
+
+medias_xgbm$modelo="xgbm"
+```
+
+
+
+## SVM
+
+### Lineal
+```{r}
+set.seed(12345)
+SVMgrid<-expand.grid(C=c(0.01,0.05,0.1,0.2,0.5,1,2,5,10))
+
+control<-trainControl(method = "repeatedcv",number=4,savePredictions = "all") 
+
+SVM<- train(data=stroke_limpia,factor(stroke)~age+hypertension_Yes+avg_glucose_level+heart_disease_Yes+smoking_status_smokes+ever_married_Yes+work_type_Private,
+            method="svmLinear",trControl=control,
+            tuneGrid=SVMgrid,verbose=FALSE)
+
+SVM$results
+plot(SVM$results$C,SVM$results$Accuracy)
+```
+
+### Elección del mejor svm-lineal
+```{r}
+SVM$bestTune
+```
+
+
+### Polinomial
+```{r}
+SVMgrid<-expand.grid(C=c(0.05,0.1,0.2,0.5,1,2),
+                     degree=c(2,3,4),scale=c(1,2,3,5))
+
+control<-trainControl(method = "repeatedcv",
+                      number=4, savePredictions = "all") 
+
+
+SVM_poly_tuneo<- train(data=stroke_limpia,factor(stroke)~age+hypertension_Yes+avg_glucose_level+heart_disease_Yes+smoking_status_smokes+ever_married_Yes+work_type_Private,
+            method="svmPoly",trControl=control,
+            tuneGrid=SVMgrid,verbose=FALSE)
+
+SVM_poly_tuneo
+
+SVM_poly_tuneo$results
+```
+
+### Elección mejor svm-polinomial
+```{r}
+SVM_poly_tuneo$bestTune
+```
+
+```{r}
+SVM_poly_tuneo$results |>  filter(degree == 4 & scale== 1 & C == 0.2) 
+```
+
+
+### Radial
+```{r}
+set.seed(12345)
+
+SVMgrid<-expand.grid(C=c( 35, 40,50,55),
+                     sigma=c(0.05,0.07 ,0.1, 0.15,0.2,0.25,0.3))
+
+control<-trainControl(method = "repeatedcv",
+                      number=4,repeats = 5,savePredictions = "all") 
+
+
+SVM<- train(data=data_bic,factor(stroke)~age+hypertension_Yes+avg_glucose_level+heart_disease_Yes+smoking_status_smokes+ever_married_Yes+work_type_Private,
+            method="svmRadial",trControl=control,
+            tuneGrid=SVMgrid,verbose=FALSE)
+
+SVM
+
+```
+
+
+### Elección mejor svm-radial
+```{r}
+SVM$bestTune
+```
+
+
+### Mejor tuneo lineal 
+```{r}
+medias_svmlineal<-cruzadaSVMbin(data=data_bic,
+                    vardep="stroke",listconti=c("age" , "hypertension_Yes" , "avg_glucose_level" , "heart_disease_Yes" , 
+    "smoking_status_smokes" , "ever_married_Yes" , "work_type_Private"),
+                    listclass=c(""),
+                    grupos=4,sinicio=1234,repe=5,C=0.5)
+
+medias_svmlineal$modelo="SVM"
+
+
+```
+
+
+### Mejor tuneo polinomial 
+```{r}
+medias_svmpoli<-cruzadaSVMbinPoly(data=data_bic,
+                        vardep="stroke",listconti=c("age" , "hypertension_Yes" , "avg_glucose_level" , "heart_disease_Yes" , 
+    "smoking_status_smokes" , "ever_married_Yes" , "work_type_Private"),
+                        listclass=c(""),
+                        grupos=4, sinicio=12345, repe=5, C=0.2,degree=4, scale=1)
+
+medias_svmpoli$modelo="SVMPoly"
+```
+
+
+
+### Mejor tuneo radial
+```{r}
+medias_svmradial<-cruzadaSVMbinRBF(data=data_bic,
+                        vardep="stroke",listconti=c("age" , "hypertension_Yes" , "avg_glucose_level" , "heart_disease_Yes" , 
+    "smoking_status_smokes" , "ever_married_Yes" , "work_type_Private"),
+                        listclass=c(""),
+                        grupos=4,sinicio=1234,repe=5,C=50,sigma=0.15)
+
+medias_svmradial$modelo="SVMRBF"
+```
+
+
+## Ensamblado 
+
+### Creación de gráficas de todos los modelos anteriores
+```{r}
+# Logistica
+medias_logi_bis <-as.data.frame(medias_logi[1])
+medias_logi_bis$modelo<-"Logística"
+predi_logi<-as.data.frame(medias_logi[2])
+predi_logi$Logi<-predi_logi$Yes
+
+
+# Red maxit 200
+medias_red_bis <-as.data.frame(medias_redes[1])
+medias_red_bis$modelo<-"Red"
+predi_red<-as.data.frame(medias_redes[2])
+predi_red$Red<-predi_red$Yes
+
+# Bagging samsize=2000
+medias_bagging_bis <-as.data.frame(medias4_bagging[1])
+medias_bagging_bis$modelo<-"Bagging"
+predi_bagging<-as.data.frame(medias4_bagging[2])
+predi_bagging$Bagging<-predi_bagging$Yes
+
+# RF
+medias_rf_bis <-as.data.frame(medias_rf[1])
+medias_rf_bis$modelo<-"RF"
+predi_rf<-as.data.frame(medias_rf[2])
+predi_rf$RF<-predi_rf$Yes
+
+# GBM
+medias_gbm_bis <-as.data.frame(medias_gbm[1])
+medias_gbm_bis$modelo<-"GBM"
+predi_gbm<-as.data.frame(medias_gbm[2])
+predi_gbm$GBM<-predi_gbm$Yes
+
+# XGBM
+medias_xgbm_bis <-as.data.frame(medias_xgbm[1])
+medias_xgbm_bis$modelo<-"XGBM"
+predi_xgbm<-as.data.frame(medias_xgbm[2])
+predi_xgbm$XGBM<-predi_xgbm$Yes
+
+# SVM
+medias_svmlineal_bis <-as.data.frame(medias_svmlineal[1])
+medias_svmlineal_bis$modelo<-"SVM"
+predi_svmlineal<-as.data.frame(medias_svmlineal[2])
+predi_svmlineal$SVM<-predi_svmlineal$Yes
+
+medias_svmpoly_bis <-as.data.frame(medias_svmpoli[1])
+medias_svmpoly_bis$modelo<-"SVMPoly"
+predi_svmpoly<-as.data.frame(medias_svmpoli[2])
+predi_svmpoly$SVMPoly<-predi_svmpoly$Yes
+
+medias_svmradial_bis <-as.data.frame(medias_svmradial[1])
+medias_svmradial_bis$modelo<-"SVMRBF"
+predi_svmradial<-as.data.frame(medias_svmradial[2])
+predi_svmradial$SVMRBF<-predi_svmradial$Yes
+
+
+# Gráficas
+union1<-rbind(medias_logi_bis, medias_red_bis, medias_bagging_bis, medias_rf_bis, medias_gbm_bis, medias_xgbm_bis,medias_svmlineal_bis,medias_svmpoly_bis,medias_svmradial_bis)
+boxplot(data=union1,tasa~modelo,col="pink",main='TASA FALLOS')
+boxplot(data=union1,auc~modelo,col="pink",main='AUC')
+
+```
+
+### Tabla de tasa de error y auc de todos los modelos
+```{r}
+union1 |> aggregate(auc ~ modelo, FUN = mean) 
+union1 |> aggregate(tasa ~ modelo, FUN = mean) 
+```
+
+
+### Combinacion de modelos
+```{r}
+unipredi<-cbind(predi_logi,predi_red,predi_bagging,predi_rf,predi_gbm,predi_xgbm,predi_svmlineal,predi_svmpoly,predi_svmradial)
+
+# Esto es para eliminar columnas duplicadas
+unipredi<- unipredi[, !duplicated(colnames(unipredi))]
+
+```
+
+```{r}
+unipredi
+```
+
+
+### Combinado de dos modelos
+```{r}
+unipredi$predi1<-(unipredi$Logi+unipredi$Red)/2
+unipredi$predi2<-(unipredi$Logi+unipredi$RF)/2
+unipredi$predi3<-(unipredi$Logi+unipredi$GBM)/2
+unipredi$predi4<-(unipredi$Logi+unipredi$XGBM)/2
+unipredi$predi5<-(unipredi$Logi+unipredi$SVM)/2
+unipredi$predi6<-(unipredi$Logi+unipredi$SVMPoly)/2
+unipredi$predi7<-(unipredi$Logi+unipredi$SVMRBF)/2
+unipredi$predi8<-(unipredi$Red+unipredi$RF)/2
+unipredi$predi9<-(unipredi$Red+unipredi$GBM)/2
+unipredi$predi10<-(unipredi$Red+unipredi$XGBM)/2
+unipredi$predi11<-(unipredi$Red+unipredi$SVM)/2
+unipredi$predi12<-(unipredi$Red+unipredi$SVMPoly)/2
+unipredi$predi13<-(unipredi$Red+unipredi$SVMRBF)/2
+unipredi$predi14<-(unipredi$RF+unipredi$GBM)/2
+unipredi$predi15<-(unipredi$RF+unipredi$XGBM)/2
+unipredi$predi16<-(unipredi$RF+unipredi$SVM)/2
+unipredi$predi17<-(unipredi$RF+unipredi$SVMPoly)/2
+unipredi$predi18<-(unipredi$RF+unipredi$SVMRBF)/2
+unipredi$predi19<-(unipredi$GBM+unipredi$XGBM)/2
+unipredi$predi20<-(unipredi$GBM+unipredi$SVM)/2
+unipredi$predi21<-(unipredi$GBM+unipredi$SVMPoly)/2
+unipredi$predi22<-(unipredi$GBM+unipredi$SVMRBF)/2
+```
+
+
+### Combinado de tres modelos
+```{r}
+unipredi$predi23<-(unipredi$Logi+unipredi$Red+unipredi$RF)/3
+unipredi$predi24<-(unipredi$Logi+unipredi$Red+unipredi$GBM)/3
+unipredi$predi25<-(unipredi$Logi+unipredi$Red+unipredi$XGBM)/3
+unipredi$predi26<-(unipredi$Logi+unipredi$Red+unipredi$SVM)/3
+unipredi$predi27<-(unipredi$Logi+unipredi$Red+unipredi$SVMPoly)/3
+unipredi$predi28<-(unipredi$Logi+unipredi$Red+unipredi$SVMRBF)/3
+unipredi$predi29<-(unipredi$Logi+unipredi$RF+unipredi$GBM)/3
+unipredi$predi30<-(unipredi$Logi+unipredi$RF+unipredi$XGBM)/3
+unipredi$predi31<-(unipredi$Logi+unipredi$RF+unipredi$SVM)/3
+unipredi$predi32<-(unipredi$Logi+unipredi$RF+unipredi$SVMPoly)/3
+unipredi$predi33<-(unipredi$Logi+unipredi$RF+unipredi$SVMRBF)/3
+unipredi$predi34<-(unipredi$Logi+unipredi$GBM+unipredi$XGBM)/3
+unipredi$predi35<-(unipredi$Logi+unipredi$GBM+unipredi$XGBM)/3
+unipredi$predi36<-(unipredi$Logi+unipredi$GBM+unipredi$SVM)/3
+unipredi$predi37<-(unipredi$Logi+unipredi$GBM+unipredi$SVMPoly)/3
+unipredi$predi38<-(unipredi$Logi+unipredi$GBM+unipredi$SVMRBF)/3
+unipredi$predi39<-(unipredi$Logi+unipredi$XGBM+unipredi$SVM)/3
+unipredi$predi40<-(unipredi$Logi+unipredi$XGBM+unipredi$SVMPoly)/3
+unipredi$predi41<-(unipredi$Logi+unipredi$XGBM+unipredi$SVMRBF)/3
+
+unipredi$predi42<-(unipredi$RF+unipredi$GBM+unipredi$SVM)/3
+unipredi$predi43<-(unipredi$RF+unipredi$GBM+unipredi$SVMPoly)/3
+unipredi$predi44<-(unipredi$RF+unipredi$GBM+unipredi$SVMRBF)/3
+
+unipredi$predi45<-(unipredi$RF+unipredi$XGBM+unipredi$SVM)/3
+unipredi$predi46<-(unipredi$RF+unipredi$XGBM+unipredi$SVMPoly)/3
+unipredi$predi47<-(unipredi$RF+unipredi$XGBM+unipredi$SVMRBF)/3
+
+unipredi$predi48<-(unipredi$RF+unipredi$Red+unipredi$GBM)/3
+unipredi$predi49<-(unipredi$RF+unipredi$Red+unipredi$XGBM)/3
+unipredi$predi50<-(unipredi$RF+unipredi$Red+unipredi$SVM)/3
+unipredi$predi51<-(unipredi$RF+unipredi$Red+unipredi$SVMPoly)/3
+unipredi$predi52<-(unipredi$RF+unipredi$Red+unipredi$SVMRBF)/3
+
+unipredi$predi53<-(unipredi$Red+unipredi$GBM+unipredi$SVM)/3
+unipredi$predi54<-(unipredi$Red+unipredi$GBM+unipredi$SVMPoly)/3
+unipredi$predi55<-(unipredi$Red+unipredi$GBM+unipredi$SVMRBF)/3
+```
+
+### Combinado de cuatro modelos
+```{r}
+unipredi$predi56<-(unipredi$Logi+unipredi$RF+unipredi$GBM+unipredi$Red)/4
+unipredi$predi57<-(unipredi$Logi+unipredi$RF+unipredi$XGBM+unipredi$Red)/4
+unipredi$predi58<-(unipredi$Logi+unipredi$RF+unipredi$XGBM+unipredi$Red)/4
+```
+
+### Combinado de cinco modelos
+```{r}
+unipredi$predi67<-(unipredi$Logi+unipredi$RF+unipredi$XGBM+unipredi$Red+unipredi$SVM)/5
+unipredi$predi68<-(unipredi$Logi+unipredi$RF+unipredi$XGBM+unipredi$Red+unipredi$SVMPoly)/5
+unipredi$predi69<-(unipredi$Logi+unipredi$RF+unipredi$XGBM+unipredi$Red+unipredi$SVMRBF)/5
+```
+
+### Listado de predi
+```{r}
+length(dput(names(unipredi)))
+
+listado_predi<-c( "Logi" ,
+"Bagging", "Red", "RF" ,
+"GBM", "XGBM", "SVM", 
+ "SVMPoly", "SVMRBF", "predi1", "predi2", "predi3", 
+"predi4", "predi5", "predi6", "predi7", "predi8", "predi9", "predi10", 
+"predi11", "predi12", "predi13", "predi14", "predi15", "predi16", 
+"predi17", "predi18", "predi19", "predi20", "predi21", "predi22", 
+"predi23", "predi24", "predi25", "predi26", "predi27", "predi28", 
+"predi29", "predi30", "predi31", "predi32", "predi33", "predi34", 
+"predi35", "predi36", "predi37", "predi38", "predi39", "predi40", 
+"predi41", "predi42", "predi43", "predi44", "predi45", "predi46", 
+"predi47", "predi48", "predi49", "predi50", "predi51", "predi52", 
+"predi53", "predi54", "predi55", "predi56", "predi57", "predi58", 
+"predi67", "predi68", "predi69")
+```
+
+```{r}
+# Se obtiene el numero de repeticiones CV y se calculan las medias por repe en
+# el data frame medias0
+
+
+repeticiones<-nlevels(factor(unipredi$Rep))
+unipredi$Rep<-as.factor(unipredi$Rep)
+unipredi$Rep<-as.numeric(unipredi$Rep)
+
+
+medias0<-data.frame(c())
+```
+
+```{r}
+# Defino funcion tasafallos
+
+tasafallos<-function(x,y) {
+  confu<-confusionMatrix(x,y)
+  tasa<-confu[[3]][1]
+  return(tasa)
+}
+
+auc<-function(x,y) {
+  curvaroc<-roc(response=x,predictor=y)
+  auc<-curvaroc$auc
+  return(auc)
+}
+```
+
+```{r}
+unipredi[,]
+```
+
+
+### Ensamblado
+```{r}
+for (prediccion in listado_predi)
+{
+  unipredi$proba<-unipredi[,prediccion]
+  unipredi[,prediccion]<-ifelse(unipredi[,prediccion]>0.5,"Yes","No")
+  for (repe in 1:repeticiones)
+  {
+    paso <- unipredi[(unipredi$Rep==repe),]
+    pre<-factor(paso[,prediccion])
+    archi<-paso[,c("proba","obs")]
+    archi<-archi[order(archi$proba),]
+    obs<-paso[,c("obs")]
+    tasa=1-tasafallos(pre,obs)
+    t<-as.data.frame(tasa)
+    t$modelo<-prediccion
+    auc<-suppressMessages(auc(archi$obs,archi$proba))
+    t$auc<-auc
+    medias0<-rbind(medias0,t)
+  }
+}
+```
+
+### Resultados
+
+#### Gráfica de todos los modelos y sus combinaciones
+```{r}
+par(cex.axis=0.5,las=2)
+boxplot(data=medias0,tasa~modelo,col="pink",main="TASA FALLOS")
+
+# Para AUC se utiliza la variable auc del archivo medias0
+
+boxplot(data=medias0,auc~modelo,col="pink",main="AUC")
+```
+
+#### Medias de la tasa de error
+```{r}
+# PRESENTACION TABLA MEDIAS
+tablamedias<-medias0 %>%
+  group_by(modelo) %>%
+  summarize(tasa=mean(tasa))     
+
+tablamedias<-as.data.frame(tablamedias[order(tablamedias$tasa),])
+
+```
+
+#### Gráfica de Tasa Fallos ordenado
+```{r}
+# ORDENACIÓN DEL FACTOR MODELO POR LAS MEDIAS EN TASA
+# PARA EL GRAFICO
+
+medias0$modelo <- with(medias0,
+                       reorder(modelo,tasa, mean))
+par(cex.axis=0.7,las=2)
+boxplot(data=medias0,tasa~modelo,col="pink", main='TASA FALLOS')
+```
+
+#### Medias del AUC
+```{r}
+tablamedias2<-medias0 %>%
+  group_by(modelo) %>%
+  summarize(auc=mean(auc))     
+
+tablamedias2<-tablamedias2[order(-tablamedias2$auc),]
+```
+
+#### Gráfica de AUC ordenada
+```{r}
+medias0$modelo <- with(medias0,
+                       reorder(modelo,auc, mean))
+par(cex.axis=0.7,las=2)
+boxplot(data=medias0,auc~modelo,col="pink", main='AUC')
+```
+#### Subsección de la gráfica
+```{r}
+listado_predi_bis<-c("predi68", "predi69", 
+              "predi58","predi57",  "predi56", "predi51",  "predi67", 
+              "predi52","predi64", "predi28", "predi46", "predi23") 
+```
+
+```{r}
+medias0$modelo<-as.character(medias0$modelo)
+
+mediasver<-medias0[medias0$modelo %in% listado_predi_bis,]
+
+
+mediasver$modelo <- with(mediasver,
+                         reorder(modelo,auc, median))
+
+par(cex.axis=0.9,las=2)
+boxplot(data=mediasver,auc~modelo,col="pink",main='AUC')
+boxplot(data=mediasver,tasa~modelo,col="pink",main='TASA FALLOS')
+```
+
+
+### Tabla de tasa de error y auc de todos los modelos
+```{r}
+medias0 |> aggregate(auc ~ modelo, FUN = mean) 
+medias0 |> aggregate(tasa ~ modelo, FUN = mean) 
+```
+
+
+```{r}
+unipredi<-cbind(predi_logi,predi_red,predi_bagging,predi_rf,predi_gbm,predi_xgbm,predi_svmlineal,predi_svmpoly,predi_svmradial)
+
+unipredi<- unipredi[, !duplicated(colnames(unipredi))]
+
+unipredi$predi1<-(unipredi$Logi+unipredi$Red)/2
+
+unipredi$predi7<-(unipredi$Logi+unipredi$SVMRBF)/2
+
+unipredi$predi12<-(unipredi$Red+unipredi$SVMPoly)/2
+
+unipredi$predi17<-(unipredi$RF+unipredi$SVMPoly)/2
+
+unipredi$predi21<-(unipredi$GBM+unipredi$SVMPoly)/2
+
+unipredi$predi27<-(unipredi$Logi+unipredi$Red+unipredi$SVMPoly)/3
+
+unipredi$predi32<-(unipredi$Logi+unipredi$RF+unipredi$SVMPoly)/3
+
+unipredi$predi37<-(unipredi$Logi+unipredi$GBM+unipredi$SVMPoly)/3
+
+unipredi$predi40<-(unipredi$Logi+unipredi$XGBM+unipredi$SVMPoly)/3
+
+unipredi$predi51<-(unipredi$RF+unipredi$Red+unipredi$SVMPoly)/3
+
+unipredi$predi54<-(unipredi$Red+unipredi$GBM+unipredi$SVMPoly)/3
+
+unipredi$predi68<-(unipredi$Logi+unipredi$RF+unipredi$XGBM+unipredi$Red+unipredi$SVMPoly)/5
+
+```
+
+
+#### Correlaciones entre las predicciones de cada modelo
+```{r}
+unigraf<-unipredi[unipredi$Rep=="Rep1",]
+solos<-c("Logi", "Red",
+         "RF","GBM",  "XGBM", "SVM",  "SVMPoly",
+         "SVMRBF")
+mat<-unigraf[,solos]
+matrizcorr<-cor(mat)
+matrizcorr
+library(corrplot)
+corrplot(matrizcorr, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45,is.corr=FALSE)
+```
+
+
+```{r}
+qplot(SVMRBF, predi68,data=unigraf,colour=obs)+
+  geom_hline(yintercept=0.5, color="black", size=1)+
+  geom_vline(xintercept=0.5, color="black", size=1)
+
+```
+
+
+
+## AutoML
+
+```{r}
+h2o.init(nthreads=8)
+
+train_automl = as.h2o(data_bic)
+```
+
+```{r}
+start_time <- Sys.time()
+
+red1<-h2o.deeplearning(x = 1:7,y=8,training_frame = train_automl,seed=12345,
+hidden = c(10),epochs =100,activation = "Tanh",rate=0.01,nfolds=10,adaptive_rate=FALSE)
+
+red1
+ 
+end_time <- Sys.time()
+
+end_time - start_time
+```
+
+### Pruebas con autoML
+```{r}
+start_time <- Sys.time()
+
+aml <- h2o.automl(x = 1:7,y=8,training_frame = train_automl,max_models = 20,seed = 1,keep_cross_validation_predictions=TRUE)
+
+lb <- aml@leaderboard
+print(lb, n = nrow(lb))  # Print all rows instead of default (6 rows)
+
+
+aml@leader
+
+
+end_time <- Sys.time()
+
+end_time - start_time
+```
+StackedEnsemble es un modelo de ensamblado utilizado por H2o comparandolo con nuestros resultas de modelos vemos que efectivamente un modelo de ensamblado es la mejor opcion para nuestro caso.
+
+###Mostramos el mejor modelo
+```{r}
+modelo_mejor_automl <- h2o.getModel("StackedEnsemble_BestOfFamily_AutoML_20230514_224113")
+str(modelo_mejor_automl)
+modelo_mejor_automl@allparameters
+```
+
+
+```{r}
+h2o.shutdown()
+```
+
+
+
+## Contraste de hipótesis
+
+### Datos de contraste
+```{r}
+# Para ver si renta utilizar un modelo mas sencillo o un ensamblado de modelos
+listamodelos_contraste<-c("SVMRBF","predi68")
+
+datacontraste<-medias0[which(medias0$modelo%in%listamodelos_contraste),]
+```
+
+
+### Contraste t de Student
+```{r}
+# Para Tasa de fallos
+
+res <- t.test(datacontraste$tasa ~datacontraste$modelo)
+res
+
+# Para auc
+
+res <- t.test(datacontraste$auc ~datacontraste$modelo)
+res
+```
+Vemos que obtenemos un p-valor muy pequeño lo que nos dice que la diferencia de medias es significativamente diferente de cero.
+Entonces al darse resultados diferentes, nos quedaríamos con el ensamblado porque este modelo más complejo mejora considerablemente en comparación con el modelo sencillo de SVM.
+
+
+### Contraste Wilcoxon
+```{r}
+library(stats)
+
+res_wilcox <- wilcox.test(datacontraste$auc ~ datacontraste$modelo)
+
+print(res_wilcox)
+
+res_wilcox <- wilcox.test(datacontraste$tasa ~ datacontraste$modelo)
+
+print(res_wilcox)
+```
+
+
+
+
+# Feature Engineering
+
+## Mejora en la variable bmi
+```{r}
+
+```
+
+
+
+## AutoEncoders
+```{r}
+
+h2o.init()
+
+train_autoencoder = as.h2o(stroke_data_clean)
+
+ae1 <- h2o.deeplearning(
+  x = 1:7,training_frame = train_autoencoder,
+  autoencoder = TRUE,
+  hidden = 6,
+  activation = 'Tanh'
+)
+
+ae1_codings <- h2o.deepfeatures(ae1, train_autoencoder, layer = 1)
+ae1_codings
+```
+
+# Predict 
+
+## Mejor valor de Grid de los modelos
+```{r}
+stackControl_predi <- trainControl(method="repeatedcv", 
+ number=4, repeats=5, savePredictions="all", classProbs=TRUE)
+
+## Grid modelos ensamblado
+rfGrid_predi <- expand.grid(mtry=c(3)) #  listclass=c(""),grupos=4,sinicio=1234,repe=5,nodesize=10, mtry=3,ntree=1100,replace=TRUE,sampsize=1)
+xgbmgrid_predi<-expand.grid(
+ min_child_weight=c(25),
+ eta=c(0.05),
+ nrounds=c(100),
+ max_depth=6,
+ gamma=0,colsample_bytree=1,subsample=1)
+
+nnetgrid_predi <-  expand.grid(size=c(13),decay=c(0.001),bag=F) # itera=200
+
+svmPolyGrid_predi <- expand.grid(C=c(0.2),degree=c(4),scale=c(1))
+
+
+## Grid mejor modelo individual
+SVMgrid_predi<-expand.grid(C=c(50),
+                     sigma=c(0.15))
+```
+
+## Todos los mejores modelos
+```{r}
+## Mejor modelos ensamblados
+logi_predict<- train(data= data_bic, stroke~  age + hypertension_Yes + avg_glucose_level + heart_disease_Yes + 
+    smoking_status_smokes + ever_married_Yes + work_type_Private ,
+             method="glm",trControl=stackControl_predi)
+
+rf_predict<- train(factor(stroke)~age+hypertension_Yes+avg_glucose_level+heart_disease_Yes+smoking_status_smokes+ever_married_Yes+work_type_Private ,data=data_bic,
+ method="rf",trControl=stackControl_predi,tuneGrid=rfGrid_predi,
+ linout = FALSE,ntree=1100,nodesize=10,replace=TRUE,
+ importance=TRUE)
+
+xgbm_predict<- train(factor(stroke)~age+hypertension_Yes+avg_glucose_level+heart_disease_Yes+smoking_status_smokes+ever_married_Yes+work_type_Private,
+ data=data_bic,
+ method="xgbTree",trControl=stackControl_predi,
+ tuneGrid=xgbmgrid_predi,verbose=FALSE)
+
+SVM_poly_predict<- train(data=data_bic,factor(stroke)~age+hypertension_Yes+avg_glucose_level+heart_disease_Yes+smoking_status_smokes+ever_married_Yes+work_type_Private,
+            method="svmPoly",trControl=stackControl_predi,
+            tuneGrid=svmPolyGrid_predi,verbose=FALSE)
+
+
+rednnet_predict<- train(stroke~ age+hypertension_Yes+avg_glucose_level+heart_disease_Yes+smoking_status_smokes+ever_married_Yes+work_type_Private,
+                  data=data_bic,
+                  method="avNNet",linout = FALSE ,maxit=200,
+                  trControl=stackControl_predi,repeats=5,tuneGrid=nnetgrid_predi,trace=F)
+
+
+## Mejor modelo individual
+SVM_predict<- train(data=data_bic,factor(stroke)~age+hypertension_Yes+avg_glucose_level+heart_disease_Yes+smoking_status_smokes+ever_married_Yes+work_type_Private,
+            method="svmRadial",trControl=stackControl_predi,
+            tuneGrid=SVMgrid_predi,verbose=FALSE)
+
+```
+
+
+
+
+```{r}
+## Variable prediccion de ensamblado
+preditotal = logi_predict$pred
+
+preditotal$Yes = (logi_predict$pred$Yes+rf_predict$pred$Yes+xgbm_predict$pred$Yes+rednnet_predict$pred$Yes+SVM_poly_predict$pred$Yes) / 5
+preditotal$No = (logi_predict$pred$No+rf_predict$pred$No+xgbm_predict$pred$No+rednnet_predict$pred$No+SVM_poly_predict$pred$No) / 5
+```
+
+## Definimos umbrales
+```{r}
+umbral <- 0.5
+preditotal$pred <- ifelse(preditotal$Yes >= umbral, "Yes", "No")
+```
+
+## Prediccion mejor modelo individual
+```{r}
+example <- confusionMatrix(data=factor(SVM_predict$pred$pred), reference = factor(SVM_predict$pred$obs), positive = "Yes")
+
+# Imprimir la matriz de confusión
+print(example)
+```
+
+## Prediccion ensamblado
+```{r}
+example <- confusionMatrix(data=factor(preditotal$pred), reference = factor(preditotal$obs), positive = "Yes")
+
+# Imprimir la matriz de confusión
+print(example)
+```
+
+```{r}
+count(test$stroke)
+```
+
+# Parametros logistica
+```{r}
+control_tablalogis <- trainControl(method = "none", classProbs = T, savePredictions = "all")
+```
+
+```{r}
+logi_tablafinal <- train(stroke ~., data= data_bic, method="glm", trControl = control_tablalogis)
+
+summary(logi_tablafinal)
+```
+
+```{r}
+count(data_bic$stroke)
+```
+```{r}
+1719/7
+```
+
+
+# Finalizamos clusters
+```{r}
+stopCluster(make_cluster)
+registerDoSEQ()
+```
+
+# Pasar fichero para SAS Miner
+## Crear particion test
+```{r}
+test_data_miner <- bake(stroke_receta |> prep(), new_data = strokedata_test)
+
+test_data_miner[c(listconti, vardep)]
+```
+
+
+
+```{r}
+ write.dbf(as.data.frame(data_bic), "/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Trabajo2/train.dbf")
+
+ write.dbf(as.data.frame(test_data_miner), "/Users/qiqizhou/Desktop/Segundo cuatri/Machine learning/Trabajo2/test.dbf")
+
+
+```
+
